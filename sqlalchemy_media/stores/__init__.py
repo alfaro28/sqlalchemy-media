@@ -11,6 +11,7 @@ from .base import Store
 from .filesystem import FileSystemStore
 from .os2 import OS2Store
 from .s3 import S3Store
+from .s3boto3 import S3Boto3Store
 from .ssh import SSHStore
 from .ftp import FTPStore
 

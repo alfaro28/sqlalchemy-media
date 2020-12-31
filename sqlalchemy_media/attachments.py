@@ -6,47 +6,18 @@ import uuid
 from os.path import splitext
 from typing import Hashable, Tuple, List, Iterable
 
-from sqlalchemy.ext.mutable import MutableList, MutableDict
 from PIL import Image as PilImage
+from sqlalchemy.ext.mutable import MutableList, MutableDict, Mutable
 
 from .constants import MB, KB
 from .descriptors import AttachableDescriptor
-from .exceptions import ThumbnailIsNotAvailableError
+from .exceptions import ThumbnailIsNotAvailableError, ContextError
 from .helpers import validate_width_height_ratio
 from .stores import StoreManager, Store
 from .typing_ import Attachable, Dimension
 
 
-class Attachment(MutableDict):
-    """
-    The base model for an attached file.
-    All attachment types will be inherited from this class.
-
-    Actually this is an instance of :class:`sqlalchemy.ext.mutable.MutableDict`
-    which inherited from :class:`dict`.
-
-    ..  doctest::
-
-        >>> from sqlalchemy_media import Attachment
-        >>> print(Attachment(key1='Value1'))
-        {'key1': 'Value1'}
-
-
-    This object should be used inside a :class:`.StoreManager` context.
-
-    .. versionchanged:: 0.5
-
-       - removed ``__analyzer__`` attribute, using ``__pre_processors__``
-         instead.
-       - removed ``__validate__`` attribute, using ``__pre_processors__``
-         instead.
-
-    .. versionadded:: 0.9.6
-
-       - ``reproducible``
-
-    """
-
+class BaseAttachment(object):
     #: The directory name of the file.
     __directory__ = 'attachments'
 
@@ -63,44 +34,14 @@ class Attachment(MutableDict):
     # contents before storing the attachment.
     __pre_processors__ = None
 
-    #: Automatically coerce `:obj:.Attachable` objects. So if True, you can
-    # set the models attribute by a `file` or `filename` or
-    # :class:`cgi.FieldStorage`.
-    __auto_coercion__ = False
-
     #: The reproducible of the file.
     __reproducible__ = False
 
     #: It allows to customize the Descriptor.
     __descriptor__ = AttachableDescriptor
 
-    @classmethod
-    def _listen_on_attribute(cls, attribute, coerce, parent_cls):
-        StoreManager.observe_attribute(attribute)
-        super()._listen_on_attribute(attribute, coerce, parent_cls)
-
-    @classmethod
-    def coerce(cls, key, value) -> 'Attachment':
-        """
-        Converts plain dictionary to instance of this class.
-
-        .. seealso:: :meth:`sqlalchemy.ext.mutable.MutableDict.coerce`
-
-        """
-        if value is None or isinstance(value, (cls, dict)):
-            return super().coerce(key, value)
-
-        if cls.__auto_coercion__:
-            if not isinstance(value, (tuple, list)):
-                value = (value, )
-
-            return cls.create_from(*value)
-
-        raise TypeError(
-            'Value type must be subclass of % s or a '
-            'tuple(file, mime, [filename]), but it\'s: %s' % (
-                cls, type(value)
-            ))
+    def __init__(self, image_store=None, *args, **kwargs):
+        self._image_store = image_store
 
     @classmethod
     def create_from(cls, *args, **kwargs):
@@ -114,171 +55,39 @@ class Attachment(MutableDict):
         instance = cls()
         return instance.attach(*args, **kwargs)
 
-    def __hash__(self) -> int:
-        """
-        Returns the unique hash of this attachment based on :attr:`.key`
-
-        """
-        return hash(self.key)
-
-    @property
-    def store_id(self) -> str:
-        """
-        Returns the id of the store used to put this file on.
-
-        Stores must be registered with appropriate id via
-        :meth:`.StoreManager.register`.
-
-        :type: str
-        """
-        return self.get('store_id')
-
-    @property
-    def key(self) -> Hashable:
-        """
-        Unique key for tracking this attachment. it will be generated during
-        attachment process in
-        :meth:`.attach` method.
-
-        :type: Hashable
-        """
-        return self.get('key')
-
-    @key.setter
-    def key(self, value) -> None:
-        self['key'] = value
-
-    @property
-    def empty(self) -> bool:
-        """
-        Check if file is attached to this object or not. Returns
-        :const:`True` when a file is loaded on this object via :meth:`.attach`
-        method or SqlAlchemy db load mechanism, else :const:`False.`
-
-        :type: bool
-        """
-        return self.key is None
-
-    @property
-    def path(self) -> str:
-        """
-        Relative Path of the file used to store and locate the file.
-
-        :type: str
-        """
-        return '%s/%s' % (self.__directory__, self.filename)
-
-    @property
-    def filename(self) -> str:
-        """
-        The filename used to store the attachment in the storage with this
-        format::
-
-            '{self.__prefix__}-{self.key}{self.suffix}{if self.extension
-            else ''}'
-
-        :type: str
-        """
-        return '%s-%s%s%s' % (self.__prefix__, self.key, self.suffix,
-                              self.extension if self.extension else '')
-
-    @property
-    def suffix(self) -> str:
-        """
-        The same as the
-        :meth:`sqlalchemy_media.attachments.Attachment.original_filename`
-        plus a leading minus(-) if available, else empty string ('') will be
-        returned.
-
-        :type: str
-        """
-        if self.original_filename:
-            return '-%s' % re.sub(
-                r'[/:.?]+',
-                '_',
-                re.sub(
-                    r'\w+://',
-                    '',
-                    splitext(self.original_filename)[0]
-                )
-            )
-
-        return ''
-
-    @property
-    def extension(self) -> str:
-        """
-        File extension.
-
-        :type: str
-        """
-        return self.get('extension')
-
-    @property
-    def content_type(self) -> str:
-        """
-        file Content-Type
-
-        :type: str
-        """
-        return self.get('content_type')
-
-    @property
-    def original_filename(self) -> str:
-        """
-        Original file name, it may be provided by user within
-        :attr:`cgi.FieldStorage.filename`, url or Physical filename.
-
-        :type: str
-        """
-        return self.get('original_filename')
-
-    @property
-    def length(self) -> int:
-        """
-        The length of the attached file in bytes.
-
-        :type: int
-        """
-        return int(self.get('length'))
-
-    @property
-    def timestamp(self):
-        """
-        The unix-time of the attachment creation.
-
-        :type: str
-        """
-        return self.get('timestamp')
-
-    @timestamp.setter
-    def timestamp(self, v: [str, float]):
-        self['timestamp'] = str(v) if not isinstance(v, str) else v
-
-    @property
-    def reproducible(self) -> bool:
-        """
-        The reproducible of the file.
-
-        :type: bool
-        """
-        return self.get('reproducible', False)
-
-    def copy(self) -> 'Attachment':
-        """
-        Copy this object using deepcopy.
-
-        """
-        return self.__class__(copy.deepcopy(self))
-
     def get_store(self) -> Store:
         """
         Returns the :class:`sqlalchemy_media.stores.Store` instance, which
         this file is stored on.
 
         """
-        store_manager = StoreManager.get_current_store_manager()
-        return store_manager.get(self.store_id)
+        try:
+            store_manager = StoreManager.get_current_store_manager()
+            return store_manager.get()
+        except ContextError:
+            if self._image_store:
+                return self._image_store
+            raise
+
+    def get_objects_to_delete(self):
+        """
+        Returns the files to be deleted, if the attachment is marked for deletion.
+
+        """
+        yield self
+
+    def get_orphaned_objects(self):
+        """
+        this method will be always called by the store when adding the ``self`` to the orphaned
+        list. so subclasses of the :class:`.Attachment` has a chance to add other related objects
+        into the orphaned list and schedule it for delete. for example the :class:`.Image` class
+        can schedule it's thumbnails for deletion also.
+        :return: An iterable of :class:`.Attachment` to mark as orphan.
+
+        .. versionadded:: 0.11.0
+
+        """
+        return iter([])
 
     def delete(self) -> None:
         """
@@ -292,6 +101,25 @@ class Attachment(MutableDict):
         """
         self.get_store().delete(self.path)
 
+    def locate(self) -> str:
+        """
+        Locates the file url.
+        """
+        store = self.get_store()
+        return store.locate(self)
+
+    def pre_store_file(self, attachment_info):
+        """
+        Called before the file has been saved on the store
+        """
+        pass
+
+    def post_store_file(self, attachment_info, length):
+        """
+        Called after the file has been saved on the store
+        """
+        pass
+
     def attach(
             self,
             attachable: Attachable,
@@ -302,25 +130,26 @@ class Attachment(MutableDict):
             overwrite: bool = False,
             suppress_pre_process: bool = False,
             suppress_validation: bool = False,
-            **kwargs) -> 'Attachment':
+            delete_orphans: bool = True,
+            **kwargs) -> 'BaseAttachment':
         """
-        Attach a file. if the session is rolled-back, all operations will be
-        rolled-back. The old file will be deleted after commit, if any.
+            Attach a file. if the session is rolled-back, all operations will be
+            rolled-back. The old file will be deleted after commit, if any.
 
-        Workflow::
+            Workflow::
 
 
-                             +--------+
-                             | Start  |
-                             +---+----+
-                                 |
-                      +----------v-----------+
-                      | Wrap with Descriptor <----+
-                      +----------+-----------+    |
-                                 |                |
-                      +----------v-----------+    |
-                      | Nothing or Analyze   |    |
-                      +----------+-----------+    |
+                                 +--------+
+                                 | Start  |
+                                 +---+----+
+                                     |
+                          +----------v-----------+
+                          | Wrap with Descriptor <----+
+                          +----------+-----------+    |
+                                     |                |
+                          +----------v-----------+    |
+                          | Nothing or Analyze   |    |
+                          +----------+-----------+    |
                                  |                |
                       +----------v-----------+    |
                       | Nothing or Validate  |    |
@@ -423,57 +252,348 @@ class Attachment(MutableDict):
                 for processor in processors:
                     processor.process(descriptor, attachment_info)
 
-            # Updating the mutable dictionary
-            self.update([(k, v)
-                         for k, v in attachment_info.items() if v is not None])
-
             # Putting the file on the store.
-            self['length'] = self.get_store().put(self.path, descriptor)
+            self.pre_store_file(attachment_info)
+            length = self.get_store().put(self.path, descriptor)
+            self.post_store_file(attachment_info, length)
 
-            self.timestamp = time.time()
+            if delete_orphans:
+                store_manager = StoreManager.get_current_store_manager()
+                store_manager.register_to_delete_after_rollback(self)
 
-            store_manager = StoreManager.get_current_store_manager()
-            store_manager.register_to_delete_after_rollback(self)
-
-            if old_attachment:
-                store_manager.register_to_delete_after_commit(old_attachment)
-                self.pop('thumbnails', None)
+                if old_attachment:
+                    store_manager.register_to_delete_after_commit(old_attachment)
 
         except BaseException:
             descriptor.close(check_length=False)
             raise
-
         else:
             descriptor.close()
-
         return self
 
-    def locate(self) -> str:
-        """
-        Locates the file url.
-        """
-        store = self.get_store()
-        return '%s?_ts=%s' % (store.locate(self), self.timestamp)
 
-    def get_objects_to_delete(self):
+class StringAttachment(BaseAttachment, Mutable):
+
+    def __init__(self, filename=None, image_store=None, directory=None, processors=None, *args, **kwargs):
+        super(StringAttachment, self).__init__(image_store=image_store, *args, **kwargs)
+        self.filename = filename
+        if directory:
+            self.__directory__ = directory
+        if processors:
+            self.__pre_processors__ = processors
+
+    @classmethod
+    def coerce(cls, key, value) -> 'StringAttachment':
+        if value is None:
+            return super().coerce(key, value)
+        if isinstance(value, (cls, StringFile)):
+            return value
+
+        raise TypeError(
+            'Value type must be subclass of % s or a '
+            'tuple(file, mime, [filename]), but it\'s: %s' % (
+                cls, type(value)
+            ))
+
+    def copy(self) -> 'StringAttachment':
+        obj = self.__class__(copy.copy(self))
+        obj.filename = self.filename
+        obj.image_store = self._image_store
+        return obj
+
+    def encode(self):
+        return self.filename
+
+    @classmethod
+    def decode(cls, filename, image_store, directory=None, processors=None):
+        return cls(filename, image_store, directory, processors)
+
+    @property
+    def path(self) -> str:
+        return self.filename
+
+    @property
+    def empty(self) -> bool:
+        return self.filename is None
+
+    def pre_store_file(self, attachment_info):
+        ext = attachment_info["original_filename"].split('.')[-1]
+        filename = '{}_{}.{}'.format(uuid.uuid4().hex, int(time.time()), ext)
+        if self.__directory__:
+            self.filename = '%s/%s' % (self.__directory__, filename)
+        else:
+            self.filename = filename
+
+    def post_store_file(self, attachment_info, length):
+        self.changed()
+
+    @property
+    def url(self):
+        return self.locate()
+
+    def attach(
+            self,
+            attachable: Attachable,
+            content_type: str = None,
+            original_filename: str = None,
+            extension: str = None,
+            store_id: str = None,
+            overwrite: bool = True,
+            suppress_pre_process: bool = False,
+            suppress_validation: bool = False,
+            delete_orphans: bool = False,
+            **kwargs) -> 'BaseAttachment':
         """
-        Returns the files to be deleted, if the attachment is marked for deletion.
+        Overwrited only to change defaults, overwrite => True, delete_orphans => False
+        """
+        return super(StringAttachment, self).attach(attachable, content_type, original_filename,
+                                                    extension, store_id, overwrite,
+                                                    suppress_pre_process, suppress_validation, delete_orphans)
+
+    def __str__(self):
+        try:
+            return self.url
+        except (ValueError, ContextError):
+            return super(StringAttachment, self).__str__()
+
+
+class MutableAttachment(BaseAttachment, MutableDict):
+    """
+    The base model for a mutable attached file.
+    All attachment types will be inherited from this class.
+
+    Actually this is an instance of :class:`sqlalchemy.ext.mutable.MutableDict`
+    which inherited from :class:`dict`.
+
+    ..  doctest::
+
+        >>> from sqlalchemy_media import MutableAttachment
+        >>> print(MutableAttachment(key1='Value1'))
+        {'key1': 'Value1'}
+
+
+    This object should be used inside a :class:`.StoreManager` context.
+
+    .. versionchanged:: 0.5
+
+       - removed ``__analyzer__`` attribute, using ``__pre_processors__``
+         instead.
+       - removed ``__validate__`` attribute, using ``__pre_processors__``
+         instead.
+
+    .. versionadded:: 0.9.6
+
+       - ``reproducible``
+
+    """
+
+    #: Automatically coerce `:obj:.Attachable` objects. So if True, you can
+    # set the models attribute by a `file` or `filename` or
+    # :class:`cgi.FieldStorage`.
+    __auto_coercion__ = False
+
+    def copy(self) -> 'MutableAttachment':
+        """
+        Copy this object using deepcopy.
 
         """
-        yield self
+        return self.__class__(copy.deepcopy(self))
 
-    def get_orphaned_objects(self):
+    def post_store_file(self, attachment_info, length):
+        # Updating the mutable dictionary
+        self.update([(k, v)
+                     for k, v in attachment_info.items() if v is not None])
+        self['length'] = length
+        self.timestamp = time.time()
+
+    def get_store(self) -> Store:
         """
-        this method will be always called by the store when adding the ``self`` to the orphaned
-        list. so subclasses of the :class:`.Attachment` has a chance to add other related objects
-        into the orphaned list and schedule it for delete. for example the :class:`.Image` class
-        can schedule it's thumbnails for deletion also.
-        :return: An iterable of :class:`.Attachment` to mark as orphan.
-
-        .. versionadded:: 0.11.0
+        Returns the :class:`sqlalchemy_media.stores.Store` instance, which
+        this file is stored on.
 
         """
-        return iter([])
+        store_manager = StoreManager.get_current_store_manager()
+        return store_manager.get(self.store_id)
+
+    @classmethod
+    def _listen_on_attribute(cls, attribute, coerce, parent_cls):
+        StoreManager.observe_attribute(attribute)
+        super()._listen_on_attribute(attribute, coerce, parent_cls)
+
+    @classmethod
+    def coerce(cls, key, value) -> 'MutableAttachment':
+        """
+        Converts plain dictionary to instance of this class.
+
+        .. seealso:: :meth:`sqlalchemy.ext.mutable.MutableDict.coerce`
+
+        """
+        if value is None or isinstance(value, (cls, dict)):
+            return super().coerce(key, value)
+
+        if cls.__auto_coercion__:
+            if not isinstance(value, (tuple, list)):
+                value = (value, )
+
+            return cls.create_from(*value)
+
+        raise TypeError(
+            'Value type must be subclass of % s or a '
+            'tuple(file, mime, [filename]), but it\'s: %s' % (
+                cls, type(value)
+            ))
+
+    def __hash__(self) -> int:
+        """
+        Returns the unique hash of this attachment based on :attr:`.key`
+
+        """
+        return hash(self.key)
+
+    @property
+    def path(self) -> str:
+        """
+        Relative Path of the file used to store and locate the file.
+
+        :type: str
+        """
+        if self.__directory__:
+            return '%s/%s' % (self.__directory__, self.filename)
+        return self.filename
+
+    @property
+    def empty(self) -> bool:
+        """
+        Check if file is attached to this object or not. Returns
+        :const:`True` when a file is loaded on this object via :meth:`.attach`
+        method or SqlAlchemy db load mechanism, else :const:`False.`
+
+        :type: bool
+        """
+        return self.key is None
+
+    @property
+    def store_id(self) -> str:
+        """
+        Returns the id of the store used to put this file on.
+
+        Stores must be registered with appropriate id via
+        :meth:`.StoreManager.register`.
+
+        :type: str
+        """
+        return self.get('store_id')
+
+    @property
+    def key(self) -> Hashable:
+        """
+        Unique key for tracking this attachment. it will be generated during
+        attachment process in
+        :meth:`.attach` method.
+
+        :type: Hashable
+        """
+        return self.get('key')
+
+    @key.setter
+    def key(self, value) -> None:
+        self['key'] = value
+
+    @property
+    def filename(self) -> str:
+        """
+        The filename used to store the attachment in the storage with this
+        format::
+
+            '{self.__prefix__}-{self.key}{self.suffix}{if self.extension
+            else ''}'
+
+        :type: str
+        """
+        return '%s-%s%s%s' % (self.__prefix__, self.key, self.suffix,
+                              self.extension if self.extension else '')
+
+    @property
+    def suffix(self) -> str:
+        """
+        The same as the
+        :meth:`sqlalchemy_media.attachments.Attachment.original_filename`
+        plus a leading minus(-) if available, else empty string ('') will be
+        returned.
+
+        :type: str
+        """
+        if self.original_filename:
+            return '-%s' % re.sub(
+                r'[/:.?]+',
+                '_',
+                re.sub(
+                    r'\w+://',
+                    '',
+                    splitext(self.original_filename)[0]
+                )
+            )
+
+        return ''
+
+    @property
+    def extension(self) -> str:
+        """
+        File extension.
+
+        :type: str
+        """
+        return self.get('extension')
+
+    @property
+    def content_type(self) -> str:
+        """
+        file Content-Type
+
+        :type: str
+        """
+        return self.get('content_type')
+
+    @property
+    def original_filename(self) -> str:
+        """
+        Original file name, it may be provided by user within
+        :attr:`cgi.FieldStorage.filename`, url or Physical filename.
+
+        :type: str
+        """
+        return self.get('original_filename')
+
+    @property
+    def length(self) -> int:
+        """
+        The length of the attached file in bytes.
+
+        :type: int
+        """
+        return int(self.get('length'))
+
+    @property
+    def timestamp(self):
+        """
+        The unix-time of the attachment creation.
+
+        :type: str
+        """
+        return self.get('timestamp')
+
+    @timestamp.setter
+    def timestamp(self, v: [str, float]):
+        self['timestamp'] = str(v) if not isinstance(v, str) else v
+
+    @property
+    def reproducible(self) -> bool:
+        """
+        The reproducible of the file.
+
+        :type: bool
+        """
+        return self.get('reproducible', False)
 
 
 class AttachmentCollection(object):
@@ -483,7 +603,7 @@ class AttachmentCollection(object):
     """
 
     #: Type of items
-    __item_type__ = Attachment
+    __item_type__ = MutableAttachment
 
     @classmethod
     def _listen_on_attribute(cls, attribute, coerce, parent_cls):
@@ -621,7 +741,7 @@ class AttachmentDict(AttachmentCollection, MutableDict):
 
         if not isinstance(value, cls):
 
-            if isinstance(value, dict) and not isinstance(value, Attachment):
+            if isinstance(value, dict) and not isinstance(value, MutableAttachment):
                 result = cls()
                 for k, v in value.items():
                     result[k] = cls.__item_type__.coerce(k, v)
@@ -663,17 +783,19 @@ class AttachmentDict(AttachmentCollection, MutableDict):
         super().__setitem__(key, value)
 
 
-class File(Attachment):
-    """
-    Representing an attached file. Normally if you want to store any file,
-    this class is the best choice.
-
-    """
-
+class BaseFile(object):
     __directory__ = 'files'
     __prefix__ = 'file'
     __max_length__ = 2 * MB
     __min_length__ = 0
+
+
+class StringFile(BaseFile, StringAttachment):
+    pass
+
+
+class MutableFile(BaseFile, MutableAttachment):
+    pass
 
 
 class FileList(AttachmentList):
@@ -685,7 +807,7 @@ class FileList(AttachmentList):
             __item_type__ = File
 
     """
-    __item_type__ = File
+    __item_type__ = MutableFile
 
 
 class FileDict(AttachmentDict):
@@ -697,10 +819,10 @@ class FileDict(AttachmentDict):
             __item_type__ = File
 
     """
-    __item_type__ = File
+    __item_type__ = MutableFile
 
 
-class BaseImage(File):
+class BaseImage(MutableFile):
     """
     Base class for all images.
 

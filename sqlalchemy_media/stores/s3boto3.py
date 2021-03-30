@@ -95,6 +95,9 @@ class S3Boto3Store(Store):
         return BytesIO(body.read())
 
     def locate(self, attachment) -> str:
+        if not attachment.path:
+            return ''
+
         if self.cdn_url:
             base_url = self.cdn_url
         else:

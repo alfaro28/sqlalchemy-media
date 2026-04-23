@@ -11,4 +11,4 @@ from .processors import Processor, ImageProcessor, Analyzer, MagicAnalyzer, \
     Validator, ContentTypeValidator, ImageValidator, ImageAnalyzer
 
 
-__version__ = '0.18.0'
+__version__ = '0.19.0'

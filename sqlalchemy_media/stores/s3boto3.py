@@ -19,8 +19,8 @@ class S3Boto3Store(Store):
     """
     base_url = 'https://{0}.s3.amazonaws.com'
 
-    def __init__(self, bucket_name: str, access_key: str, secret_key: str,
-                 region: str, base_url: str = None, cdn_url: str = None,
+    def __init__(self, bucket_name: str, access_key: str = None, secret_key: str = None,
+                 region: str = None, base_url: str = None, cdn_url: str = None,
                  policy: str = None, storage_class=None, encryption=False, reduced_redundancy=False):
         self.access_key = access_key
         self.secret_key = secret_key
